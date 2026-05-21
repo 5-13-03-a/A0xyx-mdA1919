@@ -661,6 +661,7 @@
                 <div class="sh-sfx-panel" id="sh-panel-map-switch"></div>
             </div>
         </div>
+
     </div>
 
     <!-- General -->
@@ -740,6 +741,15 @@
                         <div class="sh-api-status"><div class="sh-api-status-dot" id="sh-dot-api-stream"></div><span class="sh-api-status-text" id="sh-stat-api-stream">STREAM / ACTIVE</span></div>
                     </div>
                 </div>
+            </div>
+        </div>
+
+        <div class="sh-group-label">Presets /. API 预设</div>
+        <div class="sh-card" id="sh-api-presets-card" style="padding:16px 24px;">
+            <div id="sh-preset-list"></div>
+            <div class="sh-data-btn sh-data-btn-sec" id="sh-preset-add" style="width:100%;justify-content:center;margin-top:12px;">
+                <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                NEW PRESET
             </div>
         </div>
     </div>
@@ -1425,27 +1435,16 @@
             }
 
             function afterRestore(msg) {
-                shSetFeedback(feedbackId, msg, 'ok', 0);
-                /* 刷新 UI 状态 */
-                restoreState();
-                /* 通知 chat-app 刷新 API 配置 */
-                window.dispatchEvent(new CustomEvent('sh-api-updated'));
-                window.dispatchEvent(new CustomEvent('sh-sfx-updated'));
-                /* 重新从 IndexedDB 加载数据到内存，刷新聊天列表 */
-                if(window.ChatDB&&ChatDB.loadEntities){
-                    ChatDB.loadEntities(function(ents){
-                        if(window._caEntities!==undefined)window._caEntities=ents||[];
-                        ChatDB.loadAllConversations(function(convs){
-                            if(window._caConversations!==undefined)window._caConversations=convs||{};
-                            /* 触发 chat-app 重新渲染 */
-                            window.dispatchEvent(new CustomEvent('ca-data-reimported'));
-                        });
-                    });
-                }
-                /* 3秒后提示刷新页面 */
-                setTimeout(function() {
-                    shSetFeedback(feedbackId, msg + ' · 如列表未更新请刷新页面', 'ok', 0);
-                }, 3000);
+                console.log('[IMPORT] afterRestore:', msg);
+                // 全局 toast
+                var toast=document.createElement('div');
+                toast.style.cssText='position:fixed;top:80px;left:50%;transform:translateX(-50%);background:#151515;color:#fff;padding:12px 24px;border-radius:50px;font-size:13px;font-weight:700;z-index:9999999;opacity:1;pointer-events:none;';
+                toast.textContent=msg.indexOf('✓')!==-1?'✓ 导入成功，2秒后刷新...':'✕ 导入异常';
+                document.body.appendChild(toast);
+                // 2秒后强制刷新页面（最可靠的恢复方式）
+                setTimeout(function(){
+                    window.location.reload();
+                }, 2000);
             }
 
             /* 检测是否为新版完整备份格式 */
@@ -1465,120 +1464,39 @@
                 /* 恢复 IndexedDB：优先用 _rawStores，否则用 entities/conversations/avatars */
                 var rawStores = obj._rawStores || null;
 
-                try {
-                    /* 确定需要的 store 列表：从 _rawStores 推断，或使用默认结构 */
-                    var neededStores = ['entities', 'conversations', 'avatars'];
-                    if (rawStores) {
-                        var storeSet = {};
-                        Object.keys(rawStores).forEach(function(rawKey) {
-                            var parts = rawKey.split('::');
-                            if (parts.length === 2 && parts[0] === 'CoutureOS_ChatDB') {
-                                storeSet[parts[1]] = true;
-                            }
+                // 用 ChatDB 自身 API 写入（最可靠）
+                if(window.ChatDB&&ChatDB.clearAll){
+                    ChatDB.clearAll(function(){
+                        var entArr=ents||[];
+                        var convObj=convs||{};
+                        var avObj=avatars||{};
+                        var total=entArr.length;
+                        if(!total){afterRestore('✓  Restored '+Object.keys(lsData).length+' keys (0 entities)');return;}
+                        var done=0;
+                        entArr.forEach(function(ent){
+                            // 恢复头像到 entity 对象上
+                            var avKey=ent.id;
+                            if(avObj[avKey]&&avObj[avKey].data){ent.avatar=avObj[avKey].data;}
+                            else if(avObj[avKey]&&typeof avObj[avKey]==='string'){ent.avatar=avObj[avKey];}
+                            ChatDB.saveEntity(ent,function(){
+                                var msgs=convObj[ent.id];
+                                if(msgs){
+                                    var msgArr=Array.isArray(msgs)?msgs:(msgs.messages||[]);
+                                    ChatDB.saveConversation(ent.id,msgArr,function(){
+                                        done++;if(done>=total)afterRestore('✓  Full restore · '+total+' entities + '+Object.keys(lsData).length+' keys');
+                                    });
+                                }else{
+                                    done++;if(done>=total)afterRestore('✓  Full restore · '+total+' entities + '+Object.keys(lsData).length+' keys');
+                                }
+                            });
                         });
-                        var fromRaw = Object.keys(storeSet);
-                        if (fromRaw.length > 0) neededStores = fromRaw;
-                    }
-
-                    /* 用 versionchange 确保 store 结构存在 */
-                    var openReq = indexedDB.open('CoutureOS_ChatDB');
-                    openReq.onsuccess = function(e) {
-                        var db = e.target.result;
-                        var existingStores = Array.from(db.objectStoreNames);
-                        var missing = neededStores.filter(function(s) { return existingStores.indexOf(s) === -1; });
-
-                        if (missing.length > 0) {
-                            /* 需要升级版本来创建缺失的 store */
-                            var newVersion = db.version + 1;
-                            db.close();
-                            var upgradeReq = indexedDB.open('CoutureOS_ChatDB', newVersion);
-                            upgradeReq.onupgradeneeded = function(ev) {
-                                var udb = ev.target.result;
-                                neededStores.forEach(function(storeName) {
-                                    if (!udb.objectStoreNames.contains(storeName)) {
-                                        if (storeName === 'entities') {
-                                            udb.createObjectStore('entities', { keyPath: 'id' });
-                                        } else {
-                                            udb.createObjectStore(storeName);
-                                        }
-                                    }
-                                });
-                            };
-                            upgradeReq.onsuccess = function(ev) {
-                                var udb = ev.target.result;
-                                writeDataToDB(udb);
-                            };
-                            upgradeReq.onerror = function() {
-                                afterRestore('✓  Restored ' + Object.keys(lsData).length + ' keys (DB upgrade failed)');
-                            };
-                        } else {
-                            writeDataToDB(db);
-                        }
-                    };
-                    openReq.onerror = function() {
-                        afterRestore('✓  Restored ' + Object.keys(lsData).length + ' keys (DB open failed)');
-                    };
-
-                    function writeDataToDB(db) {
-                        var storeNames = Array.from(db.objectStoreNames);
-                        if (!storeNames.length) {
-                            db.close();
-                            afterRestore('✓  Restored ' + Object.keys(lsData).length + ' keys (DB stores missing)');
-                            return;
-                        }
-
-                        /* 只操作实际存在的 store */
-                        var targetStores = neededStores.filter(function(s) { return storeNames.indexOf(s) !== -1; });
-                        if (!targetStores.length) {
-                            db.close();
-                            afterRestore('✓  Restored ' + Object.keys(lsData).length + ' keys (no matching stores)');
-                            return;
-                        }
-
-                        var tx = db.transaction(targetStores, 'readwrite');
-
-                        targetStores.forEach(function(storeName) {
-                            var store = tx.objectStore(storeName);
-                            store.clear();
-                            var hasKeyPath = !!store.keyPath;
-
-                            var rawKey = 'CoutureOS_ChatDB::' + storeName;
-                            if (rawStores && rawStores[rawKey]) {
-                                rawStores[rawKey].forEach(function(item) {
-                                    if (hasKeyPath) {
-                                        store.put(item.value);
-                                    } else {
-                                        store.put(item.value, item.key);
-                                    }
-                                });
-                            } else if (storeName === 'entities' && ents.length) {
-                                ents.forEach(function(ent) { store.put(ent); });
-                            } else if (storeName === 'conversations') {
-                                Object.keys(convs).forEach(function(k) {
-                                    var v = convs[k];
-                                    if (v && v.messages) { store.put(v); }
-                                    else { store.put({ id: k, messages: Array.isArray(v) ? v : [] }); }
-                                });
-                            } else if (storeName === 'avatars') {
-                                Object.keys(avatars).forEach(function(k) {
-                                    var v = avatars[k];
-                                    if (v && v.id) { store.put(v); }
-                                    else { store.put({ id: k, data: v }); }
-                                });
-                            }
-                        });
-
-                        tx.oncomplete = function() {
-                            db.close();
-                            afterRestore('✓  Full backup restored · ' + Object.keys(lsData).length + ' keys + ' + targetStores.length + ' DB stores');
-                        };
-                        tx.onerror = function() {
-                            db.close();
-                            afterRestore('✓  Restored localStorage · DB write partial');
-                        };
-                    }
-                } catch(e2) {
-                    afterRestore('✓  Restored ' + Object.keys(lsData).length + ' keys (no IndexedDB)');
+                        // 超时保底
+                        setTimeout(function(){
+                            if(done<total)afterRestore('✓  Partial restore · '+done+'/'+total+' entities');
+                        },10000);
+                    });
+                }else{
+                    afterRestore('✓  Restored '+Object.keys(lsData).length+' keys (no ChatDB)');
                 }
             } else {
                 /* 旧格式：直接当 localStorage 键值对处理 */
@@ -1720,7 +1638,15 @@
             var fb = document.getElementById('sh-clear-feedback');
             if (fb.dataset.confirm === '1') {
                 localStorage.clear();
-                shSetFeedback('sh-clear-feedback', '✓  All data cleared. Reload to reset.', 'ok', 6000);
+                // 同时清除 IndexedDB
+                if(window.ChatDB&&ChatDB.clearAll){
+                    ChatDB.clearAll(function(){
+                        shSetFeedback('sh-clear-feedback', '✓  All data cleared (localStorage + IndexedDB). Reload to reset.', 'ok', 6000);
+                    });
+                }else{
+                    try{indexedDB.deleteDatabase('CoutureOS_ChatDB');}catch(e){}
+                    shSetFeedback('sh-clear-feedback', '✓  All data cleared. Reload to reset.', 'ok', 6000);
+                }
                 fb.dataset.confirm = '0';
             } else {
                 fb.dataset.confirm = '1';
@@ -1740,6 +1666,136 @@
         }
         resizeArc();
         window.addEventListener('resize', resizeArc);
+
+        /* ── API Presets ── */
+        function getPresets(){try{return JSON.parse(localStorage.getItem('sh-api-presets')||'[]');}catch(e){return[];}}
+        function savePresets(p){localStorage.setItem('sh-api-presets',JSON.stringify(p));}
+
+        function renderPresets(){
+            var list=document.getElementById('sh-preset-list');
+            if(!list)return;
+            var presets=getPresets();
+            if(!presets.length){list.innerHTML='<div style="font-size:10px;color:var(--meta);text-align:center;padding:12px 0;">No presets yet</div>';return;}
+            list.innerHTML=presets.map(function(p,i){
+                return '<div class="sh-preset-row" data-idx="'+i+'" style="display:flex;align-items:center;gap:10px;padding:12px 0;border-bottom:1px solid var(--line);">'+
+                    '<div style="flex:1;min-width:0;">'+
+                        '<div style="font-size:13px;font-weight:700;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+p.name+'</div>'+
+                        '<div style="font-size:9px;color:var(--meta);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+((p.endpoint||'').substring(0,30))+' · '+(p.model||'—')+'</div>'+
+                    '</div>'+
+                    '<div class="sh-data-btn" data-action="use" data-idx="'+i+'" style="padding:6px 12px;font-size:9px;">USE</div>'+
+                    '<div class="sh-data-btn sh-data-btn-sec" data-action="edit" data-idx="'+i+'" style="padding:6px 10px;font-size:9px;">✎</div>'+
+                    '<div class="sh-data-btn sh-data-btn-danger" data-action="del" data-idx="'+i+'" style="padding:6px 10px;font-size:9px;">✕</div>'+
+                '</div>';
+            }).join('');
+
+            list.querySelectorAll('[data-action]').forEach(function(btn){
+                btn.addEventListener('click',function(e){
+                    e.stopPropagation();
+                    var idx=parseInt(btn.dataset.idx);
+                    var action=btn.dataset.action;
+                    var presets=getPresets();
+                    if(action==='use'){
+                        var p=presets[idx];if(!p)return;
+                        var raw=localStorage.getItem('ca-api-config');
+                        var cfg={};if(raw)try{cfg=JSON.parse(raw);}catch(e){}
+                        var node=cfg.node||'primary';
+                        var cur=cfg[node]||{};
+                        function doSwitch(){
+                            if(!cfg[node])cfg[node]={};
+                            cfg[node].endpoint=p.endpoint||'';
+                            cfg[node].key=p.key||'';
+                            cfg[node].model=p.model||'';
+                            localStorage.setItem('ca-api-config',JSON.stringify(cfg));
+                            restoreState();
+                            window.dispatchEvent(new CustomEvent('sh-api-updated'));
+                            renderPresets();
+                        }
+                        if(cur.endpoint||cur.key){
+                            ensureModalStyle();
+                            var oldM=document.getElementById('sh-preset-modal');if(oldM)oldM.remove();
+                            var askModal=document.createElement('div');
+                            askModal.id='sh-preset-modal';askModal.className='me-modal';
+                            askModal.innerHTML='<div class="me-modal-card"><div class="me-modal-title">保存当前配置？</div><div class="me-modal-sub">切换前是否将当前 API 配置保存为预设</div><div class="me-modal-actions"><button class="me-modal-btn cancel" id="shAskNo">不保存</button><button class="me-modal-btn confirm" id="shAskYes">保存</button></div></div>';
+                            document.body.appendChild(askModal);
+                            requestAnimationFrame(function(){askModal.classList.add('show');});
+                            var hideAsk=function(){askModal.classList.remove('show');setTimeout(function(){askModal.remove();},250);};
+                            document.getElementById('shAskNo').addEventListener('click',function(){hideAsk();doSwitch();});
+                            document.getElementById('shAskYes').addEventListener('click',function(){
+                                hideAsk();
+                                var curPreset={name:'Auto-saved',endpoint:cur.endpoint||'',key:cur.key||'',model:cur.model||''};
+                                presets.push(curPreset);savePresets(presets);renderPresets();
+                                doSwitch();
+                            });
+                            askModal.addEventListener('click',function(ev){if(ev.target===askModal){hideAsk();doSwitch();}});
+                        }else{doSwitch();}
+                    }else if(action==='edit'){
+                        openPresetEditor(idx);
+                    }else if(action==='del'){
+                        if(!confirm('Delete preset "'+presets[idx].name+'"?'))return;
+                        presets.splice(idx,1);
+                        savePresets(presets);
+                        renderPresets();
+                    }
+                });
+            });
+        }
+
+        function ensureModalStyle(){
+            if(document.getElementById('sh-modal-style'))return;
+            var s=document.createElement('style');s.id='sh-modal-style';
+            s.textContent='.me-modal{position:fixed;inset:0;z-index:99990;background:rgba(0,0,0,0.4);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;padding:20px;opacity:0;visibility:hidden;transition:opacity 0.25s,visibility 0.25s;}.me-modal.show{opacity:1;visibility:visible;}.me-modal-card{width:100%;max-width:340px;background:#fff;border-radius:24px;padding:24px 20px 20px;position:relative;transform:scale(0.92) translateY(20px);transition:transform 0.3s cubic-bezier(0.16,1,0.3,1);box-shadow:0 20px 60px rgba(0,0,0,0.2);}.me-modal.show .me-modal-card{transform:scale(1) translateY(0);}.me-modal-title{font-size:13px;font-weight:800;color:#1a1a1f;letter-spacing:0.5px;margin-bottom:4px;}.me-modal-sub{font-size:9px;font-weight:700;color:rgba(26,26,31,0.25);letter-spacing:2px;text-transform:uppercase;margin-bottom:18px;}.me-modal-field{margin-bottom:14px;}.me-modal-label{font-size:9px;font-weight:800;color:rgba(26,26,31,0.35);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:6px;}.me-modal-input{width:100%;padding:10px 14px;border-radius:12px;border:0.5px solid rgba(26,26,31,0.1);background:rgba(26,26,31,0.02);font-size:13px;color:#1a1a1f;font-family:inherit;outline:none;transition:all 0.2s;box-sizing:border-box;}.me-modal-input:focus{border-color:rgba(26,26,31,0.3);background:#fff;}.me-modal-actions{display:flex;gap:8px;margin-top:18px;}.me-modal-btn{flex:1;padding:12px;border-radius:12px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;cursor:pointer;border:none;transition:all 0.2s;text-align:center;}.me-modal-btn.cancel{background:rgba(26,26,31,0.04);color:#1a1a1f;}.me-modal-btn.confirm{background:#1a1a1f;color:#fff;}.me-modal-btn:active{transform:scale(0.97);}';
+            document.head.appendChild(s);
+        }
+
+        function openPresetEditor(idx){
+            ensureModalStyle();
+            var presets=getPresets();
+            var isNew=(idx===undefined||idx===null||idx<0);
+            var p=isNew?{name:'',endpoint:'',key:'',model:''}:presets[idx];
+
+            var old=document.getElementById('sh-preset-modal');if(old)old.remove();
+            var modal=document.createElement('div');
+            modal.id='sh-preset-modal';
+            modal.className='me-modal';
+            modal.innerHTML=
+                '<div class="me-modal-card">'+
+                    '<div class="me-modal-title">'+(isNew?'New Preset':'Edit Preset')+'</div>'+
+                    '<div class="me-modal-sub">API Configuration Preset</div>'+
+                    '<div class="me-modal-field"><div class="me-modal-label">Name</div><input type="text" class="me-modal-input" id="shPrName" value="'+(p.name||'').replace(/"/g,'&quot;')+'" placeholder="My API"></div>'+
+                    '<div class="me-modal-field"><div class="me-modal-label">Endpoint</div><input type="text" class="me-modal-input" id="shPrEp" value="'+(p.endpoint||'').replace(/"/g,'&quot;')+'" placeholder="https://api.openai.com/v1"></div>'+
+                    '<div class="me-modal-field"><div class="me-modal-label">API Key</div><input type="text" class="me-modal-input" id="shPrKey" value="'+(p.key||'').replace(/"/g,'&quot;')+'" placeholder="sk-..."></div>'+
+                    '<div class="me-modal-field"><div class="me-modal-label">Model</div><input type="text" class="me-modal-input" id="shPrModel" value="'+(p.model||'').replace(/"/g,'&quot;')+'" placeholder="gpt-4o"></div>'+
+                    '<div class="me-modal-actions">'+
+                        '<button class="me-modal-btn cancel" id="shPrCancel">Cancel</button>'+
+                        '<button class="me-modal-btn confirm" id="shPrSave">Save</button>'+
+                    '</div>'+
+                '</div>';
+            document.body.appendChild(modal);
+            requestAnimationFrame(function(){modal.classList.add('show');});
+
+            var hide=function(){modal.classList.remove('show');setTimeout(function(){modal.remove();},250);};
+            modal.addEventListener('click',function(e){if(e.target===modal)hide();});
+            document.getElementById('shPrCancel').addEventListener('click',hide);
+            document.getElementById('shPrSave').addEventListener('click',function(){
+                var entry={
+                    name:(document.getElementById('shPrName').value.trim()||'Unnamed'),
+                    endpoint:document.getElementById('shPrEp').value.trim(),
+                    key:document.getElementById('shPrKey').value.trim(),
+                    model:document.getElementById('shPrModel').value.trim()
+                };
+                if(isNew){presets.push(entry);}
+                else{presets[idx]=entry;}
+                savePresets(presets);
+                renderPresets();
+                hide();
+            });
+        }
+
+        document.getElementById('sh-preset-add').addEventListener('click',function(){
+            openPresetEditor(-1);
+        });
+
+        renderPresets();
     }
 
     /* ══════════════════════════════════════
