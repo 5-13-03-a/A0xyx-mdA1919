@@ -37,10 +37,22 @@ var built=false;
 var currentEntId=null;
 var _cachedMaskAvatar='';
 
-function loadAndCacheMaskAvatar(cb){
+function getActiveMaskForEntity(entId){
     var masks;
     try{masks=JSON.parse(localStorage.getItem('ca-user-masks')||'[]');}catch(e){masks=[];}
-    var active=masks.find(function(m){return m.active;})||masks[0];
+    // 优先查绑定了当前联系人的面具
+    if(entId){
+        for(var i=0;i<masks.length;i++){
+            var bEnts=masks[i].boundEntities||[];
+            if(bEnts.indexOf(entId)>=0)return masks[i];
+        }
+    }
+    // 没找到绑定的，用全局激活的
+    return masks.find(function(m){return m.active;})||masks[0];
+}
+
+function loadAndCacheMaskAvatar(cb){
+    var active=getActiveMaskForEntity(currentEntId);
     if(!active){_cachedMaskAvatar='';if(cb)cb();return;}
     if(typeof ChatDB==='undefined'){_cachedMaskAvatar='';if(cb)cb();return;}
     ChatDB.open(function(d){
@@ -961,9 +973,7 @@ function doRenderMessages(area,ent){
 
         var sentAvHtml='';
         if(isSent&&avatarCfg.sent){
-            var userMasks;
-            try{userMasks=JSON.parse(localStorage.getItem('ca-user-masks')||'[]');}catch(ex){userMasks=[];}
-            var activeMask=userMasks.find(function(m){return m.active;});
+            var activeMask=getActiveMaskForEntity(currentEntId);
             var _sentAv=_cachedMaskAvatar;
             if(isLast){
                 if(_sentAv){
@@ -1619,9 +1629,7 @@ function appendUserBubbles(displayText,rawText){
 
         var sentAvHtml='';
         if(avatarCfg.sent){
-            var userMasks;
-            try{userMasks=JSON.parse(localStorage.getItem('ca-user-masks')||'[]');}catch(ex){userMasks=[];}
-            var activeMask=userMasks.find(function(m){return m.active;});
+            var activeMask=getActiveMaskForEntity(currentEntId);
             var _sentAv2=_cachedMaskAvatar;
             if(_sentAv2){
                 sentAvHtml='<div class="cda-msg-av cda-sent-av"><img src="'+_sentAv2+'"></div>';
@@ -2130,19 +2138,9 @@ function triggerAI(){
         if(memData.low.length)memInject+='LOW（细节）:\n'+memData.low.map(function(m){return '- '+m;}).join('\n')+'\n';
     }
 
-    // 用户面具（与旧系统共用 ca-user-masks）
-    // 优先查绑定到当前联系人的面具，没有绑定则用全局激活的
+    // 用户面具（优先绑定面具，没绑定则用全局激活的）
     var maskPrompt='';
-    var masks;
-    try{masks=JSON.parse(localStorage.getItem('ca-user-masks')||'[]');}catch(e){masks=[];}
-    var activeMask=null;
-    // 先找绑定了当前联系人的面具
-    for(var _mi=0;_mi<masks.length;_mi++){
-        var _bEnts=masks[_mi].boundEntities||[];
-        if(_bEnts.indexOf(currentEntId)>=0){activeMask=masks[_mi];break;}
-    }
-    // 没找到绑定的，用全局激活的
-    if(!activeMask)activeMask=masks.find(function(m){return m.active;});
+    var activeMask=getActiveMaskForEntity(currentEntId);
     if(activeMask&&activeMask.name){
         maskPrompt='\nTHE USER\'S IDENTITY:\n- Name: '+activeMask.name+'\n- Persona: '+(activeMask.bio||'')+'\n';
     }
