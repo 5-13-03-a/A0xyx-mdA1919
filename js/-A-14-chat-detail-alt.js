@@ -1951,8 +1951,7 @@ function appendAiBubbles(fullText,callback){
                 }
             }
 
-            var clickAttr=(transText&&transStyle!=='off'&&(transStyle==='underline'||transStyle==='ink'||transStyle==='split'||transStyle==='typewriter'))?' onclick="this.querySelector(\'.cda-bubble\').classList.toggle(\'cda-tr-active\')"':'';
-            row.innerHTML=avHtml+'<div class="cda-bubble-wrap"'+clickAttr+'><div class="cda-bubble'+(transText&&transStyle!=='off'?' cda-tr-has':'')+'">'+escapeHtml(mainText)+transHtml+'</div></div>';
+            row.innerHTML=avHtml+'<div class="cda-bubble-wrap"><div class="cda-bubble'+(transText&&transStyle!=='off'?' cda-tr-has':'')+'">'+escapeHtml(mainText)+transHtml+'</div></div>';
             area.appendChild(row);
             updateTailClasses(area);
             animateBubbleIn(row,animClass);
