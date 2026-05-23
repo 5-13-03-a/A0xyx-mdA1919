@@ -1382,6 +1382,99 @@ function _injectBubbleLabels(area){
     });
 }
 
+function _injectLabelForRow(row){
+    if(!row||!currentEntId)return;
+    var labels;
+    try{labels=JSON.parse(localStorage.getItem('ca-bubble-labels-'+currentEntId)||localStorage.getItem('ca-bubble-labels')||'[]');}catch(e){labels=[];}
+    if(labels.length===0)return;
+    var msgs=window._caConversations&&window._caConversations[currentEntId]?window._caConversations[currentEntId]:[];
+    var isSent=row.classList.contains('sent');
+    var isRecv=row.classList.contains('received');
+
+    labels.forEach(function(lb){
+        if(!lb.on)return;
+        var target=lb.target||'both';
+        if(target==='sent'&&!isSent)return;
+        if(target==='recv'&&!isRecv)return;
+        if(target==='both'&&!isSent&&!isRecv)return;
+
+        var mode=lb.mode||'last';
+        // 追加模式下，新气泡暂时都显示标签（最终由 _injectBubbleLabels 统一修正）
+        // 但 mode=all 肯定显示；mode=last/first 在逐条追加时无法准确判断，先都显示
+        var pos=lb.pos||'below';
+        var fmt=lb.format||'HH:mm';
+        var isTime=lb.type==='time';
+        var fixedText=lb.text||'';
+        var size=lb.size||9;
+        var color=lb.color||'rgba(26,26,31,0.3)';
+        var weight=lb.weight||'400';
+        var style=lb.fontStyle||'normal';
+        var offX=lb.offX||0;
+        var offY=lb.offY||0;
+
+        var text='';
+        if(isTime){
+            var msgIdx=row.getAttribute('data-msg-idx');
+            if(msgIdx!==null){
+                var idx=parseInt(msgIdx,10);
+                if(msgs[idx]&&msgs[idx].time){
+                    var parts=msgs[idx].time.split(' ');
+                    var timePart=parts[1]||'';
+                    if(timePart){
+                        var hp=timePart.split(':');
+                        var h=parseInt(hp[0],10)||0;
+                        var m=hp[1]||'00';
+                        var s=hp[2]||'00';
+                        var h12=h%12||12;
+                        var ampm=h>=12?'下午':'上午';
+                        text=fmt.replace('HH',String(h).padStart(2,'0')).replace('hh',String(h12).padStart(2,'0')).replace('mm',m).replace('ss',s).replace('a',ampm);
+                    }
+                }
+            }
+            if(!text){
+                var now=new Date();
+                text=fmt.replace('HH',String(now.getHours()).padStart(2,'0')).replace('hh',String(now.getHours()%12||12).padStart(2,'0')).replace('mm',String(now.getMinutes()).padStart(2,'0')).replace('ss',String(now.getSeconds()).padStart(2,'0')).replace('a',now.getHours()>=12?'下午':'上午');
+            }
+        }else{
+            text=fixedText;
+        }
+        if(!text)return;
+
+        var el=document.createElement('span');
+        el.className='cda-bubble-lbl';
+        el.textContent=text;
+        var baseStyle='font-size:'+size+'px;color:'+color+';font-weight:'+weight+';font-style:'+style+';white-space:nowrap;pointer-events:none;line-height:1.2;display:block;';
+
+        var wrap=row.querySelector('.cda-bubble-wrap');
+        var bubble=row.querySelector('.cda-bubble');
+        if(!wrap)return;
+
+        if(pos==='below'){
+            el.style.cssText=baseStyle+'margin-top:'+offY+'px;'+(offX!==0?'margin-left:'+offX+'px;':'')+'padding:0 2px;';
+            wrap.appendChild(el);
+        }else if(pos==='above'){
+            el.style.cssText=baseStyle+'margin-bottom:'+offY+'px;'+(offX!==0?'margin-left:'+offX+'px;':'')+'padding:0 2px;';
+            wrap.insertBefore(el,wrap.firstChild);
+        }else if(pos==='right'){
+            wrap.style.display='flex';wrap.style.alignItems='flex-end';wrap.style.gap='0px';
+            el.style.cssText=baseStyle+'flex-shrink:0;position:relative;bottom:'+(-offY)+'px;margin-left:'+(4+offX)+'px;';
+            wrap.appendChild(el);
+        }else if(pos==='left'){
+            wrap.style.display='flex';wrap.style.alignItems='flex-end';wrap.style.gap='0px';
+            el.style.cssText=baseStyle+'flex-shrink:0;position:relative;bottom:'+(-offY)+'px;margin-right:'+(4+offX)+'px;';
+            wrap.insertBefore(el,wrap.firstChild);
+        }else if(pos==='inline-right'&&bubble){
+            bubble.style.position='relative';
+            el.style.cssText=baseStyle+'position:absolute;bottom:'+(2+offY)+'px;right:'+(6-offX)+'px;';
+            bubble.appendChild(el);
+        }else if(pos==='inline-left'&&bubble){
+            bubble.style.position='relative';
+            el.style.cssText=baseStyle+'position:absolute;bottom:'+(2+offY)+'px;left:'+(6+offX)+'px;';
+            bubble.appendChild(el);
+        }
+    });
+}
+
 // 暴露给多选删除模块
 window._cdaDoRenderMessages=function(area,ent){doRenderMessages(area,ent);};
 
@@ -2080,6 +2173,7 @@ function appendAiBubbles(fullText,callback){
 
             row.innerHTML=avHtml+'<div class="cda-bubble-wrap"><div class="cda-bubble'+(transText&&transStyle!=='off'?' cda-tr-has':'')+'">'+escapeHtml(mainText)+transHtml+'</div></div>';
             area.appendChild(row);
+            _injectLabelForRow(row);
             animateBubbleIn(row,animClass);
             smoothScrollToBottom(area);
 
